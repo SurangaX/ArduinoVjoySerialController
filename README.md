@@ -71,6 +71,8 @@ A simple while loop handles real-time input while the app is running, and everyt
 
 You can download the compiled `.exe` from the Releases tab on GitHub.
 
+-> https://github.com/SurangaX/com-to-vjoy/releases/
+
 ----------------------
 📃 License
 ----------------------
