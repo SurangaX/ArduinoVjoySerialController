@@ -35,7 +35,7 @@ Make sure you have Python installed with dependencies:
 
 Then run:
 
-    python main.py
+    com_to_vjoy_gui.py
 
 ----------------------
 🧠 Under the Hood
