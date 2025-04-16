@@ -15,6 +15,14 @@ Created by SurangaX 🕹️
 - Start/Stop functionality for clean device control
 
 ----------------------
+📥 Downloads
+----------------------
+
+You can download the compiled `.exe` from the Releases tab on GitHub.
+
+-> https://github.com/SurangaX/com-to-vjoy/releases/
+
+----------------------
 📦 How to Use
 ----------------------
 
@@ -64,14 +72,6 @@ A simple while loop handles real-time input while the app is running, and everyt
    → This was a bug in the initial version, caused by serial or thread conflicts.  
    ✅ It’s now mostly fixed — serial port and vJoy are re-initialized properly.  
    If you still face this, try clicking Quit and reopening the app.
-
-----------------------
-📥 Downloads
-----------------------
-
-You can download the compiled `.exe` from the Releases tab on GitHub.
-
--> https://github.com/SurangaX/com-to-vjoy/releases/
 
 ----------------------
 📃 License
