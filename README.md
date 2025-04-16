@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 COM to vJoy
 ===========
 
@@ -79,3 +80,6 @@ MIT License
 ----------------------
 
 Created with ❤️ by SurangaX
+=======
+# com-to-vjoy
+>>>>>>> dd62de6510f552729c9ee7dd37fbbd31b8d386f4
