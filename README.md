@@ -1,5 +1,5 @@
 
-COM to vJoy
+Arduino Vjoy Serial Controller
 ===========
 
 A Windows GUI utility to bridge serial (COM) input from a microcontroller (like an Arduino or ESP8266) to a virtual joystick using vJoy.  
