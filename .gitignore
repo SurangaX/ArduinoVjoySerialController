@@ -1,1 +1,19 @@
-"__pycache__/\n*.pyc\n*.pyo\n*.pyd\nbuild/\ndist/\n*.spec" 
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build output
+build/
+dist/
+
+# Windows shortcuts & OS files
+*.lnk
+*.lock
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env/
+venv/
+env/
