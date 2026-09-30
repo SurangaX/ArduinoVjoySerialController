@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Arduino](https://img.shields.io/badge/Firmware-Arduino%20%2F%20ESP8266-teal.svg)](https://www.arduino.cc/)
 [![vJoy](https://img.shields.io/badge/vJoy-Virtual%20Joystick-orange.svg)](https://github.com/njz3/vJoy)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT-NC](https://img.shields.io/badge/License-MIT--NC%20(Non--Commercial)-red.svg)](LICENSE)
 
 A Windows GUI utility and microcontroller firmware suite that bridges serial (COM) input from hardware microcontrollers (Arduino, ESP8266, ESP32) into virtual joystick inputs using **vJoy**.
 
@@ -52,7 +52,7 @@ ArduinoVjoySerialController/
 │   │   └── steeringwheel_basic.ino
 │   └── AS5600_Debug/       # Diagnostic script for AS5600 I2C connection & magnet strength
 │       └── AS5600_Debug.ino
-├── LICENSE                 # MIT License
+├── LICENSE                 # MIT Non-Commercial License
 └── README.md
 ```
 
@@ -143,7 +143,7 @@ The GUI parses incoming serial strings at 115200 baud:
 
 ## 📃 License
 
-Distributed under the [MIT License](LICENSE).
+Distributed under the **MIT Non-Commercial License (MIT-NC)**. Free for personal, educational, and hobbyist use. Commercial use, redistribution for profit, or inclusion in commercial products is prohibited without permission. See [LICENSE](LICENSE) for details.
 
 ---
 
