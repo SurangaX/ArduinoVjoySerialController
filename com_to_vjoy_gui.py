@@ -5,6 +5,7 @@ import serial.tools.list_ports
 import threading
 import time
 import math
+from collections import deque
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pystray
@@ -112,67 +113,81 @@ class WheelCanvas(tk.Canvas):
         self.cx    = size // 2
         self.cy    = size // 2
         self.angle = 0.0
-        self._draw()
+        self._grip_ids    = []
+        self._spoke_ids   = []
+        self._accent_ids  = []
+        self._init_items()
 
     def set_angle(self, degrees: float):
         if abs(degrees - self.angle) > 0.4:
             self.angle = degrees
-            self._draw()
+            self._update_items()
 
     def _polar(self, cx, cy, r, deg):
         rad = math.radians(deg - 90)
         return cx + r * math.cos(rad), cy + r * math.sin(rad)
 
-    def _draw(self):
-        self.delete("all")
+    def _init_items(self):
+        """Create all canvas items once; only rotating parts are updated later."""
         cx, cy = self.cx, self.cy
-        a  = self.angle
         r  = self.WHEEL_R
         rw = self.RIM_W
 
-        # Shadow
+        # Static shadow & outer rim
         sr = r + rw // 2 + 6
         self.create_oval(cx-sr, cy-sr, cx+sr, cy+sr,
                          outline="#000000", width=8, fill="")
-
-        # Outer rim — mid-gray so it's visible on dark bg
         self.create_oval(cx-r, cy-r, cx+r, cy+r,
                          outline=C_WHEEL_RIM, width=rw, fill="")
 
-        # Grip segments (3 arcs, rotate with wheel)
-        for ga in [a+90, a+210, a+330]:
-            self.create_arc(cx-r, cy-r, cx+r, cy+r,
-                            start=-(ga+30), extent=60,
-                            outline=C_WHEEL_GRP, width=rw-2, style=tk.ARC)
+        # Rotating grip segments (3 arcs)
+        for _ in range(3):
+            gid = self.create_arc(cx-r, cy-r, cx+r, cy+r,
+                                  start=0, extent=60,
+                                  outline=C_WHEEL_GRP, width=rw-2, style=tk.ARC)
+            self._grip_ids.append(gid)
 
-        # Spokes + thin cyan highlight
-        se = r - rw//2 + 1
-        ss = self.HUB_R + 2
-        for so in [a, a+120, a+240]:
-            x1, y1 = self._polar(cx, cy, ss, so)
-            x2, y2 = self._polar(cx, cy, se, so)
-            self.create_line(x1, y1, x2, y2,
-                             fill=C_WHEEL_RIM, width=self.SPOKE_W, capstyle=tk.ROUND)
-            xa1, ya1 = self._polar(cx, cy, ss+4, so)
-            xa2, ya2 = self._polar(cx, cy, se-4, so)
-            self.create_line(xa1, ya1, xa2, ya2,
-                             fill=C_WHEEL_ACC, width=1, capstyle=tk.ROUND)
+        # Rotating spokes + thin cyan highlights
+        for _ in range(3):
+            sid = self.create_line(0, 0, 0, 0,
+                                   fill=C_WHEEL_RIM, width=self.SPOKE_W, capstyle=tk.ROUND)
+            aid = self.create_line(0, 0, 0, 0,
+                                   fill=C_WHEEL_ACC, width=1, capstyle=tk.ROUND)
+            self._spoke_ids.append(sid)
+            self._accent_ids.append(aid)
 
-        # Hub
+        # Static hub, 12 o'clock reference tick, outer accent ring
         hr = self.HUB_R
         self.create_oval(cx-hr, cy-hr, cx+hr, cy+hr,
                          outline=C_WHEEL_ACC, width=2, fill=C_WHEEL_HUB)
-
-        # Fixed reference tick — always at 12 o'clock, never rotates
         ti = r - rw//2 - 2
         to = r + rw//2 + 4
         self.create_line(cx, cy-ti, cx, cy-to,
                          fill=C_ACCENT, width=3, capstyle=tk.ROUND)
-
-        # Outer accent ring
         ar = r + rw//2 + 2
         self.create_oval(cx-ar, cy-ar, cx+ar, cy+ar,
                          outline=C_ACCENT, width=1, fill="")
+
+        self._update_items()
+
+    def _update_items(self):
+        cx, cy = self.cx, self.cy
+        a  = self.angle
+        r  = self.WHEEL_R
+        rw = self.RIM_W
+        se = r - rw//2 + 1
+        ss = self.HUB_R + 2
+
+        for idx, ga in enumerate((a+90, a+210, a+330)):
+            self.itemconfig(self._grip_ids[idx], start=-(ga+30))
+
+        for idx, so in enumerate((a, a+120, a+240)):
+            x1, y1 = self._polar(cx, cy, ss, so)
+            x2, y2 = self._polar(cx, cy, se, so)
+            self.coords(self._spoke_ids[idx], x1, y1, x2, y2)
+            xa1, ya1 = self._polar(cx, cy, ss+4, so)
+            xa2, ya2 = self._polar(cx, cy, se-4, so)
+            self.coords(self._accent_ids[idx], xa1, ya1, xa2, ya2)
 
 
 # ─── Main Application ─────────────────────────────────────────────────────────
@@ -191,9 +206,18 @@ class VJoyApp:
         self.selected_vjoy_device = 1
 
         # Steering state
-        self.current_angle  = 0.0
-        self.center_offset  = 0
-        self.request_center = False
+        self.current_angle         = 0.0
+        self.center_offset         = 0
+        self.request_center        = False
+        self._cached_sensor_mode   = "AS5600 Magnetic"
+        self._cached_degrees       = 900
+        self._pending_angle        = None
+        self._wheel_flush_scheduled = False
+        self._window_hidden        = start_minimized
+        self._last_x_axis          = None
+        self._last_y_axis          = None
+        self._last_ui_angle        = 0.0
+        self._last_btn_state       = {}
 
         # Button LED states
         self.btn_leds = {}   # {n: (canvas, oval_id, text_id)}
@@ -201,6 +225,15 @@ class VJoyApp:
         # Hotkey
         self.center_hotkey     = "ctrl+shift+c"
         self.hotkey_registered = False
+
+        # Serial debugger state
+        self.debug_visible           = False
+        self.debug_paused            = False
+        self.debug_autoscrl          = True
+        self._debug_linecnt          = 0
+        self.DEBUG_MAX_LINES         = 500
+        self._debug_queue            = deque(maxlen=500)
+        self._debug_flush_scheduled  = False
 
         self.set_master_icon()
         self.setup_gui()
@@ -247,8 +280,12 @@ class VJoyApp:
         self.set_window_icon()
         self._apply_ttk_style()
 
+        # Left main column (fixed 420px width; right drawer expands horizontally)
+        self.main_col = tk.Frame(self.window, bg=C_BG)
+        self.main_col.pack(side='left', fill='y')
+
         # ── Title bar ─────────────────────────────────────────────────────────
-        title_bar = tk.Frame(self.window, bg=C_PANEL, height=48)
+        title_bar = tk.Frame(self.main_col, bg=C_PANEL, height=48)
         title_bar.pack(fill='x')
         title_bar.pack_propagate(False)
         tk.Label(title_bar, text="⬡", font=(FONT, 18, "bold"),
@@ -259,7 +296,7 @@ class VJoyApp:
                  font=(FONT, 8), fg=C_LABEL, bg=C_PANEL).pack(side='left', padx=(6, 0), pady=14)
 
         # ── Steering wheel ─────────────────────────────────────────────────────
-        vis_frame = tk.Frame(self.window, bg=C_BG)
+        vis_frame = tk.Frame(self.main_col, bg=C_BG)
         vis_frame.pack(fill='x', padx=16, pady=(16, 0))
 
         self.wheel_canvas = WheelCanvas(vis_frame, size=220)
@@ -287,7 +324,7 @@ class VJoyApp:
         center_btn.pack(pady=(8, 0))
 
         # ── Button LEDs — single horizontal row ───────────────────────────────
-        led_row = tk.Frame(self.window, bg=C_BG)
+        led_row = tk.Frame(self.main_col, bg=C_BG)
         led_row.pack(pady=(14, 6))
 
         LED = 32
@@ -307,7 +344,7 @@ class VJoyApp:
 
         # ── Settings card ─────────────────────────────────────────────────────
         # 1-px border achieved by thin outer frame in border colour
-        card_border = tk.Frame(self.window, bg=C_BORDER, padx=1, pady=1)
+        card_border = tk.Frame(self.main_col, bg=C_BORDER, padx=1, pady=1)
         card_border.pack(fill='x', padx=16, pady=(10, 8))
         card = tk.Frame(card_border, bg=C_CARD, padx=18, pady=14)
         card.pack(fill='both', expand=True)
@@ -363,6 +400,7 @@ class VJoyApp:
                                                  "Combined (Pot=X, Mag=Y)"])
         self.sensor_type.pack(fill='x')
         self.sensor_type.current(1)
+        self.sensor_type.bind("<<ComboboxSelected>>", lambda e: self._sync_cached_settings())
 
         lock_col = tk.Frame(row2, bg=C_CARD)
         lock_col.pack(side='right')
@@ -375,6 +413,7 @@ class VJoyApp:
                                                 "540", "900", "1080"])
         self.degree_var.pack()
         self.degree_var.current(4)
+        self.degree_var.bind("<<ComboboxSelected>>", lambda e: self._sync_cached_settings())
 
         # Row 3 — CENTER HOTKEY (inline ✓/✕ icons)
         tk.Label(card, text="CENTER HOTKEY", font=(FONT, 7, "bold"),
@@ -430,7 +469,7 @@ class VJoyApp:
         self._separator()
 
         # ── Connect / Disconnect button ────────────────────────────────────────
-        conn_wrap = tk.Frame(self.window, bg=C_BG, padx=16, pady=10)
+        conn_wrap = tk.Frame(self.main_col, bg=C_BG, padx=16, pady=10)
         conn_wrap.pack(fill='x')
 
         self.connect_btn = tk.Button(conn_wrap,
@@ -449,49 +488,326 @@ class VJoyApp:
         self._separator()
 
         # ── Unified footer bar ─────────────────────────────────────────────────
-        footer = tk.Frame(self.window, bg=C_PANEL, padx=14, pady=8)
+        footer = tk.Frame(self.main_col, bg=C_PANEL, padx=12, pady=8)
         footer.pack(fill='x')
 
-        # Status — far left
+        # Buttons — far right (pack first so status_left expands into remaining space)
+        quit_btn = tk.Button(footer, text="✕  Quit",
+                             font=(FONT, 9, "bold"),
+                             fg=C_ERROR, bg=C_PANEL,
+                             activebackground=C_BTN_HOV, activeforeground=C_ERROR,
+                             relief='flat', bd=0, padx=7, pady=4,
+                             command=self.safe_quit, cursor="hand2")
+        quit_btn.pack(side='right', padx=(4, 0))
+
+        tray_btn = tk.Button(footer, text="📍  Tray",
+                             font=(FONT, 9),
+                             fg=C_LABEL, bg=C_PANEL,
+                             activebackground=C_BTN_HOV, activeforeground=C_FG,
+                             relief='flat', bd=0, padx=7, pady=4,
+                             command=self.minimize_to_tray, cursor="hand2")
+        tray_btn.pack(side='right', padx=(4, 0))
+
+        # Debug toggle — pill button
+        self.debug_toggle_btn = tk.Button(
+            footer, text="⌨  Debug",
+            font=(FONT, 9),
+            fg=C_LABEL, bg=C_PANEL,
+            activebackground=C_BTN_HOV, activeforeground=C_ACCENT,
+            relief='flat', bd=0, padx=8, pady=4,
+            command=self._toggle_debug_panel,
+            cursor="hand2")
+        self.debug_toggle_btn.pack(side='right', padx=(4, 0))
+
+        # Status — far left, fills remaining space cleanly
         status_left = tk.Frame(footer, bg=C_PANEL)
-        status_left.pack(side='left', fill='y')
+        status_left.pack(side='left', fill='x', expand=True)
 
         self.status_dot = tk.Label(status_left, text="●",
                                    font=(FONT, 9), fg=C_LABEL, bg=C_PANEL)
         self.status_dot.pack(side='left')
         self.status_text = tk.Label(status_left, text="IDLE",
                                     font=(FONT, 9), fg=C_LABEL, bg=C_PANEL, anchor='w')
-        self.status_text.pack(side='left', padx=(5, 0))
+        self.status_text.pack(side='left', fill='x', expand=True, padx=(5, 4))
 
-        # Buttons — far right
-        quit_btn = tk.Button(footer, text="✕  Quit",
-                             font=(FONT, 9, "bold"),
-                             fg=C_ERROR, bg=C_PANEL,
-                             activebackground=C_BTN_HOV, activeforeground=C_ERROR,
-                             relief='flat', bd=0, padx=10, pady=4,
-                             command=self.safe_quit, cursor="hand2")
-        quit_btn.pack(side='right', padx=(8, 0))
+        # ── Serial Debugger Side-Drawer (hidden by default) ───────────────────
+        self._build_debug_panel()
 
-        tray_btn = tk.Button(footer, text="📍  Tray",
-                             font=(FONT, 9),
-                             fg=C_LABEL, bg=C_PANEL,
-                             activebackground=C_BTN_HOV, activeforeground=C_FG,
-                             relief='flat', bd=0, padx=10, pady=4,
-                             command=self.minimize_to_tray, cursor="hand2")
-        tray_btn.pack(side='right')
-
-        # Final sizing — centre on screen
+        # Final sizing — lock main_col dimensions & centre on screen
         self.refresh_ports()
         self.window.update_idletasks()
         w, h = 420, self.window.winfo_reqheight()
-        sw   = self.window.winfo_screenwidth()
-        sh   = self.window.winfo_screenheight()
-        self.window.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self._base_w = w
+        self._base_h = h
+        self.main_col.configure(width=w, height=h)
+        self.main_col.pack_propagate(False)
+        sw = self.window.winfo_screenwidth()
+        sh = self.window.winfo_screenheight()
+        x  = max(0, (sw - w) // 2)
+        y  = max(0, min((sh - h) // 2, sh - h - 48))
+        self.window.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ── Serial Debugger Panel (Side Drawer) ───────────────────────────────────
+
+    def _build_debug_panel(self):
+        """Build the collapsible right-side serial monitor drawer (hidden by default)."""
+        self.debug_frame = tk.Frame(self.window, bg=C_BG)
+        # NOT packed yet — stays hidden until toggled
+
+        # 1px vertical divider separating main column and debug drawer
+        tk.Frame(self.debug_frame, bg=C_BORDER, width=1).pack(side='left', fill='y')
+
+        dbg_body = tk.Frame(self.debug_frame, bg=C_BG)
+        dbg_body.pack(side='left', fill='both', expand=True)
+
+        # ── Header bar (matches main title_bar height=48) ─────────────────────
+        toolbar = tk.Frame(dbg_body, bg=C_PANEL, height=48, padx=12)
+        toolbar.pack(fill='x')
+        toolbar.pack_propagate(False)
+
+        tk.Label(toolbar, text="SERIAL MONITOR",
+                 font=(FONT, 9, "bold"), fg=C_ACCENT, bg=C_PANEL).pack(side='left')
+
+        self.debug_baud_lbl = tk.Label(toolbar, text="115200 baud",
+                                       font=(FONT_MONO, 8), fg=C_LABEL, bg=C_PANEL2,
+                                       padx=6, pady=2)
+        self.debug_baud_lbl.pack(side='left', padx=(8, 0))
+
+        # Close drawer button on far right
+        tk.Button(toolbar, text="✕",
+                  font=(FONT, 9, "bold"), fg=C_LABEL, bg=C_PANEL,
+                  activebackground=C_BTN_HOV, activeforeground=C_ERROR,
+                  relief='flat', bd=0, padx=7, pady=3,
+                  command=self._toggle_debug_panel,
+                  cursor="hand2").pack(side='right', padx=(4, 0))
+
+        # Toolbar controls with clear labels & active states
+        tk.Button(toolbar, text="Clear",
+                  font=(FONT, 8), fg=C_LABEL, bg=C_PANEL,
+                  activebackground=C_BTN_HOV, activeforeground=C_FG,
+                  relief='flat', bd=0, padx=7, pady=3,
+                  command=self._debug_clear,
+                  cursor="hand2").pack(side='right', padx=2)
+
+        self._debug_pause_btn = tk.Button(
+            toolbar, text="Pause",
+            font=(FONT, 8), fg=C_LABEL, bg=C_PANEL,
+            activebackground=C_BTN_HOV, activeforeground=C_WARNING,
+            relief='flat', bd=0, padx=7, pady=3,
+            command=self._debug_toggle_pause,
+            cursor="hand2")
+        self._debug_pause_btn.pack(side='right', padx=2)
+
+        self._debug_scroll_btn = tk.Button(
+            toolbar, text="Auto",
+            font=(FONT, 8, "bold"), fg=C_ACCENT, bg=C_CARD,
+            activebackground=C_BTN_HOV, activeforeground=C_ACCENT,
+            relief='flat', bd=0, padx=7, pady=3,
+            command=self._debug_toggle_autoscroll,
+            cursor="hand2")
+        self._debug_scroll_btn.pack(side='right', padx=2)
+
+        tk.Frame(dbg_body, bg=C_BORDER, height=1).pack(fill='x')
+
+        # ── Log text area (expands to fill full drawer height) ────────────────
+        log_border = tk.Frame(dbg_body, bg=C_BORDER, padx=1, pady=1)
+        log_border.pack(fill='both', expand=True, padx=12, pady=(10, 4))
+
+        log_frame = tk.Frame(log_border, bg="#0a0a0a")
+        log_frame.pack(fill='both', expand=True)
+
+        self.debug_text = tk.Text(
+            log_frame,
+            font=(FONT_MONO, 9),
+            bg="#0a0a0a",
+            fg=C_FG,
+            insertbackground=C_ACCENT,
+            selectbackground=C_ACCENT2,
+            selectforeground="#000000",
+            relief='flat',
+            bd=0,
+            wrap='none',
+            state='disabled',
+            padx=8, pady=6
+        )
+
+        vsb = tk.Scrollbar(log_frame, orient='vertical', command=self.debug_text.yview,
+                           bg=C_PANEL, troughcolor="#0a0a0a", width=10, bd=0)
+        self.debug_text.configure(yscrollcommand=vsb.set)
+
+        vsb.pack(side='right', fill='y')
+        self.debug_text.pack(side='left', fill='both', expand=True)
+
+        # Colour tags
+        self.debug_text.tag_config("angle",   foreground=C_ACCENT)      # cyan   — sensor data
+        self.debug_text.tag_config("button",  foreground=C_SUCCESS)     # green  — button events
+        self.debug_text.tag_config("warn",    foreground=C_WARNING)     # amber  — unknown lines
+        self.debug_text.tag_config("error",   foreground=C_ERROR)       # red    — errors
+        self.debug_text.tag_config("send",    foreground="#cc88ff")     # purple — TX lines
+        self.debug_text.tag_config("dim",     foreground=C_LABEL)       # gray   — timestamps
+
+        # ── Meta row (stream hint + line counter) ─────────────────────────────
+        meta_row = tk.Frame(dbg_body, bg=C_BG)
+        meta_row.pack(fill='x', padx=12, pady=(0, 6))
+
+        tk.Label(meta_row, text="Raw serial stream (RX)",
+                 font=(FONT, 7), fg=C_LABEL, bg=C_BG).pack(side='left')
+        self.debug_linecnt_lbl = tk.Label(
+            meta_row, text="0 lines",
+            font=(FONT, 7), fg=C_LABEL, bg=C_BG, anchor='e')
+        self.debug_linecnt_lbl.pack(side='right')
+
+        tk.Frame(dbg_body, bg=C_BORDER, height=1).pack(fill='x')
+
+        # ── Send command row (aligned with main footer bar) ───────────────────
+        send_row = tk.Frame(dbg_body, bg=C_PANEL, padx=12, pady=8)
+        send_row.pack(fill='x')
+
+        tk.Label(send_row, text="TX ›", font=(FONT_MONO, 9, "bold"),
+                 fg="#cc88ff", bg=C_PANEL).pack(side='left')
+
+        self.debug_send_var = tk.StringVar()
+        send_entry = tk.Entry(send_row,
+                              textvariable=self.debug_send_var,
+                              font=(FONT_MONO, 9),
+                              bg=C_PANEL2, fg="#cc88ff",
+                              insertbackground="#cc88ff",
+                              relief='flat', bd=0,
+                              highlightthickness=1,
+                              highlightbackground=C_BORDER,
+                              highlightcolor=C_ACCENT)
+        send_entry.pack(side='left', fill='x', expand=True, padx=(8, 0), ipady=4)
+        send_entry.bind("<Return>", lambda e: self._debug_send())
+
+        tk.Button(send_row, text="SEND",
+                  font=(FONT, 8, "bold"),
+                  fg="#000000", bg="#cc88ff",
+                  activebackground="#aa66dd",
+                  activeforeground="#ffffff",
+                  relief='flat', bd=0, padx=12, pady=4,
+                  command=self._debug_send,
+                  cursor="hand2").pack(side='right', padx=(8, 0))
+
+    def _toggle_debug_panel(self):
+        """Show or hide the side-by-side serial monitor drawer, clamped to screen bounds."""
+        self.debug_visible = not self.debug_visible
+        if self.debug_visible:
+            self.debug_frame.pack(side='left', fill='both', expand=True)
+            self.debug_toggle_btn.config(fg=C_ACCENT, bg=C_CARD)
+            self._debug_log("--- Serial Monitor opened ---", "dim")
+            self._start_debug_flusher()
+            w = self._base_w + 440
+        else:
+            self.debug_frame.pack_forget()
+            self.debug_toggle_btn.config(fg=C_LABEL, bg=C_PANEL)
+            w = self._base_w
+
+        self.window.update_idletasks()
+        h  = self._base_h
+        sw = self.window.winfo_screenwidth()
+        sh = self.window.winfo_screenheight()
+        x  = self.window.winfo_x()
+        y  = self.window.winfo_y()
+
+        # Clamp so expanded drawer never overflows off-screen or behind taskbar
+        if x + w > sw - 12:
+            x = max(12, sw - w - 12)
+        if x < 0:
+            x = 12
+        if y + h > sh - 48:
+            y = max(0, sh - h - 48)
+
+        self.window.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _debug_log(self, msg: str, tag: str = "warn"):
+        """Queue a line for the serial monitor (non-blocking, batched at 20 Hz)."""
+        if self.debug_paused or not self.debug_visible:
+            return
+        self._debug_queue.append((time.strftime("%H:%M:%S"), msg, tag))
+
+    def _start_debug_flusher(self):
+        """Start the 100ms periodic debug log flusher while the drawer is open."""
+        if not self._debug_flush_scheduled:
+            self._debug_flush_scheduled = True
+            self.master.after(100, self._flush_debug_log)
+
+    def _flush_debug_log(self):
+        """Drain queued serial lines into tk.Text in one fast batch."""
+        self._debug_flush_scheduled = False
+        if not self.debug_visible:
+            self._debug_queue.clear()
+            return
+
+        if self._debug_queue:
+            batch = []
+            while self._debug_queue:
+                batch.append(self._debug_queue.popleft())
+
+            self.debug_text.config(state='normal')
+            for ts, msg, tag in batch:
+                self.debug_text.insert('end', f"[{ts}]  ", "dim")
+                self.debug_text.insert('end', f"{msg}\n", tag)
+            self._debug_linecnt += len(batch)
+
+            excess = self._debug_linecnt - self.DEBUG_MAX_LINES
+            if excess > 0:
+                self.debug_text.delete("1.0", f"{excess + 1}.0")
+                self._debug_linecnt = self.DEBUG_MAX_LINES
+
+            self.debug_text.config(state='disabled')
+            if self.debug_autoscrl:
+                self.debug_text.see('end')
+            try:
+                self.debug_linecnt_lbl.config(text=f"{self._debug_linecnt} lines")
+            except Exception:
+                pass
+
+        if self.debug_visible:
+            self._debug_flush_scheduled = True
+            self.master.after(100, self._flush_debug_log)
+
+    def _debug_clear(self):
+        self.debug_text.config(state='normal')
+        self.debug_text.delete("1.0", 'end')
+        self.debug_text.config(state='disabled')
+        self._debug_linecnt = 0
+        self.debug_linecnt_lbl.config(text="0 lines")
+
+    def _debug_toggle_pause(self):
+        self.debug_paused = not self.debug_paused
+        if self.debug_paused:
+            self._debug_pause_btn.config(fg=C_WARNING, bg=C_CARD)
+            self._debug_log("--- Paused ---", "warn")
+        else:
+            self._debug_pause_btn.config(fg=C_LABEL, bg=C_PANEL)
+            self._debug_log("--- Resumed ---", "dim")
+
+    def _debug_toggle_autoscroll(self):
+        self.debug_autoscrl = not self.debug_autoscrl
+        self._debug_scroll_btn.config(
+            fg=C_ACCENT if self.debug_autoscrl else C_LABEL,
+            bg=C_CARD if self.debug_autoscrl else C_PANEL
+        )
+
+    def _debug_send(self):
+        """Send a raw command string to the Arduino over the open serial port."""
+        cmd = self.debug_send_var.get().strip()
+        if not cmd:
+            return
+        if not self.running or not self.ser or not self.ser.is_open:
+            self._debug_log("Not connected — cannot send", "error")
+            return
+        try:
+            self.ser.write((cmd + "\n").encode('utf-8'))
+            self._debug_log(f"TX: {cmd}", "send")
+            self.debug_send_var.set("")
+        except Exception as e:
+            self._debug_log(f"TX error: {e}", "error")
 
     # ── Widget helpers ────────────────────────────────────────────────────────
 
     def _separator(self):
-        tk.Frame(self.window, bg=C_BORDER, height=1).pack(fill='x')
+        tk.Frame(self.main_col, bg=C_BORDER, height=1).pack(fill='x')
 
     def _apply_ttk_style(self):
         style = ttk.Style()
@@ -522,6 +838,35 @@ class VJoyApp:
             canvas.itemconfig(txt, fill=C_LABEL)
 
     # ── Wheel angle update ────────────────────────────────────────────────────
+
+    def _sync_cached_settings(self):
+        """Cache combobox values on the main thread so read_serial never touches Tk."""
+        try:
+            self._cached_sensor_mode = self.sensor_type.get()
+            self._cached_degrees     = int(self.degree_var.get())
+        except Exception:
+            pass
+
+    def _schedule_wheel_update(self, angle_deg: float):
+        """Coalesce wheel UI redraws to ~30 Hz and skip when hidden in tray."""
+        if self._window_hidden:
+            return
+        if abs(angle_deg - self._last_ui_angle) < 0.25:
+            return
+        self._last_ui_angle = angle_deg
+        self._pending_angle = angle_deg
+        if not self._wheel_flush_scheduled:
+            self._wheel_flush_scheduled = True
+            try:
+                self.master.after(33, self._flush_wheel_ui)
+            except Exception:
+                self._wheel_flush_scheduled = False
+
+    def _flush_wheel_ui(self):
+        self._wheel_flush_scheduled = False
+        angle = self._pending_angle
+        if angle is not None:
+            self._update_wheel(angle)
 
     def _update_wheel(self, angle_deg: float):
         self.current_angle = angle_deg
@@ -579,7 +924,9 @@ class VJoyApp:
                 return
             dev  = int(self.vjoy_combobox.get())
             port = sel.split(" - ")[0] if " - " in sel else sel
+            self._sync_cached_settings()
             self.ser         = serial.Serial(port, 115200, timeout=1)
+            self.ser.reset_input_buffer()
             self.vjoy_device = pyvjoy.VJoyDevice(dev)
             self.selected_vjoy_device = dev
             self.running = True
@@ -617,6 +964,9 @@ class VJoyApp:
 
         for n in range(1, 7):
             self._update_led(n, False)
+        self._last_x_axis = None
+        self._last_y_axis = None
+        self._last_btn_state.clear()
         self._update_wheel(0.0)
 
         self._set_status("DISCONNECTED", C_ERROR, C_ERROR)
@@ -691,21 +1041,44 @@ class VJoyApp:
     # ── Serial reading ────────────────────────────────────────────────────────
 
     def read_serial(self):
+        buf = b""
         try:
             while self.running and self.ser and self.ser.is_open:
                 try:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line:
-                        self.process_line(line)
+                    waiting = self.ser.in_waiting
+                    chunk   = self.ser.read(waiting if waiting > 0 else 1)
+                    if not chunk:
+                        continue
+                    buf += chunk
+                    while b"\n" in buf:
+                        raw_line, buf = buf.split(b"\n", 1)
+                        line = raw_line.decode('utf-8', errors='ignore').strip()
+                        if line:
+                            self.process_line(line)
                 except Exception:
                     continue
         except Exception as e:
             if self.running:
-                self.master.after(0, lambda: messagebox.showerror("Serial Error", str(e)))
+                err_msg = str(e)
+                self._debug_log(f"Serial exception: {err_msg}", "error")
+                self.master.after(0, lambda: messagebox.showerror("Serial Error", err_msg))
             self.master.after(0, self.stop)
 
     def process_line(self, line):
-        mode = self.sensor_type.get()
+        mode    = self._cached_sensor_mode
+        degrees = self._cached_degrees
+
+        # Log the raw line if debug drawer is open (lock-free deque append)
+        if self.debug_visible and not self.debug_paused:
+            if "AS5600 Angle:" in line or "Smoothed Potentiometer Value:" in line:
+                tag = "angle"
+            elif "Button " in line:
+                tag = "button"
+            else:
+                tag = "warn"
+            self._debug_queue.append((time.strftime("%H:%M:%S"), line, tag))
+
+        # ── vJoy / wheel processing ───────────────────────────────────────────
 
         # Potentiometer
         if "Smoothed Potentiometer Value:" in line:
@@ -714,10 +1087,11 @@ class VJoyApp:
                     value  = int(line.split(":")[1].strip())
                     scaled = int((value / 1023) * 32767)
                     scaled = max(0, min(32767, scaled))
-                    self.vjoy_device.set_axis(pyvjoy.HID_USAGE_X, scaled)
-                    degrees = int(self.degree_var.get())
-                    angle   = ((value / 1023) - 0.5) * degrees
-                    self.master.after(0, lambda a=angle: self._update_wheel(a))
+                    if scaled != self._last_x_axis:
+                        self._last_x_axis = scaled
+                        self.vjoy_device.set_axis(pyvjoy.HID_USAGE_X, scaled)
+                    angle = ((value / 1023) - 0.5) * degrees
+                    self._schedule_wheel_update(angle)
                 except Exception:
                     pass
 
@@ -729,32 +1103,41 @@ class VJoyApp:
                     if self.request_center:
                         self.center_offset  = value
                         self.request_center = False
-                        # Use muted green — not neon — so it doesn't clash with cyan
                         self.master.after(0, lambda: self._set_status(
                             "Wheel centered ✓", C_SUCCESS_MUT, C_SUCCESS_MUT))
-                    degrees    = int(self.degree_var.get())
                     max_units  = (degrees / 360.0) * 4096
                     half_range = max_units / 2.0
                     adjusted   = value - self.center_offset
                     mapped     = ((adjusted + half_range) / max_units) * 32767
                     scaled     = int(max(0, min(32767, mapped)))
                     if mode == "Combined (Pot=X, Mag=Y)":
-                        self.vjoy_device.set_axis(pyvjoy.HID_USAGE_Y, scaled)
+                        if scaled != self._last_y_axis:
+                            self._last_y_axis = scaled
+                            self.vjoy_device.set_axis(pyvjoy.HID_USAGE_Y, scaled)
                     else:
-                        self.vjoy_device.set_axis(pyvjoy.HID_USAGE_X, scaled)
+                        if scaled != self._last_x_axis:
+                            self._last_x_axis = scaled
+                            self.vjoy_device.set_axis(pyvjoy.HID_USAGE_X, scaled)
                     angle = (adjusted / 4096.0) * 360.0
-                    self.master.after(0, lambda a=angle: self._update_wheel(a))
+                    self._schedule_wheel_update(angle)
                 except Exception:
                     pass
 
-        # Button states
-        for i in range(1, 7):
-            if f"Button {i} pressed!" in line:
-                self.vjoy_device.set_button(i, 1)
-                self.master.after(0, lambda n=i: self._update_led(n, True))
-            elif f"Button {i} released!" in line:
-                self.vjoy_device.set_button(i, 0)
-                self.master.after(0, lambda n=i: self._update_led(n, False))
+        # Button states (fast-path check avoids 12 string checks on angle packets)
+        elif "Button " in line:
+            for i in range(1, 7):
+                if f"Button {i} pressed!" in line:
+                    if not self._last_btn_state.get(i):
+                        self._last_btn_state[i] = True
+                        self.vjoy_device.set_button(i, 1)
+                        self.master.after(0, lambda n=i: self._update_led(n, True))
+                    break
+                elif f"Button {i} released!" in line:
+                    if self._last_btn_state.get(i, True):
+                        self._last_btn_state[i] = False
+                        self.vjoy_device.set_button(i, 0)
+                        self.master.after(0, lambda n=i: self._update_led(n, False))
+                    break
 
     # ── Tray icon ─────────────────────────────────────────────────────────────
 
@@ -795,6 +1178,7 @@ class VJoyApp:
 
     def open_window_safe(self):
         try:
+            self._window_hidden = False
             self.window.deiconify()
             self.window.state('normal')
             self.window.lift()
@@ -814,6 +1198,7 @@ class VJoyApp:
 
     def minimize_to_tray(self):
         try:
+            self._window_hidden = True
             self.window.withdraw()
             if self.icon:
                 self.icon.visible = True
