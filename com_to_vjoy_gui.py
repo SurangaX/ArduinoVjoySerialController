@@ -216,7 +216,7 @@ class VJoyApp:
         self._window_hidden        = start_minimized
         self._last_x_axis          = None
         self._last_y_axis          = None
-        self._last_ui_angle        = 0.0
+        self._last_ui_angle        = None
         self._last_btn_state       = {}
 
         # Button LED states
@@ -851,7 +851,7 @@ class VJoyApp:
         """Coalesce wheel UI redraws to ~30 Hz and skip when hidden in tray."""
         if self._window_hidden:
             return
-        if abs(angle_deg - self._last_ui_angle) < 0.25:
+        if self._last_ui_angle is not None and abs(angle_deg - self._last_ui_angle) < 0.25:
             return
         self._last_ui_angle = angle_deg
         self._pending_angle = angle_deg
@@ -925,9 +925,21 @@ class VJoyApp:
             dev  = int(self.vjoy_combobox.get())
             port = sel.split(" - ")[0] if " - " in sel else sel
             self._sync_cached_settings()
-            self.ser         = serial.Serial(port, 115200, timeout=1)
-            self.ser.reset_input_buffer()
+            self._last_x_axis   = None
+            self._last_y_axis   = None
+            self._last_ui_angle = None
+            self._last_btn_state.clear()
+
             self.vjoy_device = pyvjoy.VJoyDevice(dev)
+            ser = serial.Serial()
+            ser.port     = port
+            ser.baudrate = 115200
+            ser.timeout  = 0.05
+            ser.dtr      = False   # Prevent Arduino Nano auto-reset on connect
+            ser.rts      = False
+            ser.open()
+            ser.reset_input_buffer()
+            self.ser = ser
             self.selected_vjoy_device = dev
             self.running = True
 
@@ -964,8 +976,9 @@ class VJoyApp:
 
         for n in range(1, 7):
             self._update_led(n, False)
-        self._last_x_axis = None
-        self._last_y_axis = None
+        self._last_x_axis   = None
+        self._last_y_axis   = None
+        self._last_ui_angle = None
         self._last_btn_state.clear()
         self._update_wheel(0.0)
 
